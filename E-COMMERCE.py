@@ -1,294 +1,178 @@
-### BERT
+# --------------------------------------
+# ALL MODELS: BERT, RF, CNN, Word2Vec, SVM
+# --------------------------------------
 
-# Mount your Google Drive to access the dataset
+# ✅ Import libraries
+import pandas as pd
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+from transformers import BertTokenizer, BertForSequenceClassification, get_linear_schedule_with_warmup
+from transformers.optimization import AdamW
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.svm import SVR
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import StandardScaler
+from tensorflow import keras
+from tensorflow.keras import layers
+from gensim.models import Word2Vec
 from google.colab import drive
+
+# ✅ Mount Google Drive
 drive.mount('/content/drive')
 
-
-
-# Load your dataset or replace this with loading your data
-dataset_path = '/content/drive/My Drive/info_acc_mini.csv'  # Update with the correct path
+# ✅ Load dataset
+dataset_path = '/content/drive/My Drive/info_acc.csv'  # Update path if needed
 df = pd.read_csv(dataset_path)
-df.head()
+print("Dataset Loaded. Shape:", df.shape)
 
-# Assuming you have loaded your dataset with columns 'DescriptionLength' and 'Accuracy'
-X = df['DescriptionLength']
-y = df['Accuracy']
+# ✅ Helper function: Evaluation
+def evaluate_model(y_true, y_pred, name):
+    mse = mean_squared_error(y_true, y_pred)
+    rmse = np.sqrt(mse)
+    mae = mean_absolute_error(y_true, y_pred)
+    r2 = r2_score(y_true, y_pred)
+    print(f"\n📊 {name} Results:")
+    print(f"RMSE: {rmse:.4f} | MAE: {mae:.4f} | R²: {r2:.4f}")
+    return {'Model': name, 'RMSE': rmse, 'MAE': mae, 'R2': r2}
 
-leveler, raiser = 100 , 6
+# ✅ Prepare Data
+features = ['Price', 'DescriptionLength', 'InStock', 'ProductRating']
+target = 'Accuracy'
+text_field = 'ProductName'  # For BERT and Word2Vec
 
-# Tokenize text data
+X = df[features]
+y = df[target]
+
+# Scale numeric features for NN & SVM
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+results = []
+
+# --------------------------------------
+# 🌟 1. RANDOM FOREST
+# --------------------------------------
+rf = RandomForestRegressor(n_estimators=100, random_state=42)
+rf.fit(X_train, y_train)
+y_pred_rf = rf.predict(X_test)
+results.append(evaluate_model(y_test, y_pred_rf, "Random Forest"))
+
+# Feature importance
+print("\n🌿 Random Forest Feature Importance:")
+for f, imp in zip(features, rf.feature_importances_):
+    print(f"{f}: {imp:.4f}")
+
+# --------------------------------------
+# 🌟 2. CONVOLUTIONAL NEURAL NETWORK (CNN)
+# --------------------------------------
+import tensorflow as tf
+from tensorflow.keras import layers, models
+
+# Reshape tabular data for CNN input: (samples, features, 1)
+X_train_cnn = X_scaled[:len(y_train)].reshape(-1, X_train.shape[1], 1)
+X_test_cnn = X_scaled[len(y_train):].reshape(-1, X_train.shape[1], 1)
+
+# Build CNN model
+model_cnn = models.Sequential([
+    layers.Conv1D(filters=32, kernel_size=2, activation='relu', input_shape=(X_train_cnn.shape[1], 1)),
+    layers.MaxPooling1D(pool_size=2),
+    layers.Flatten(),
+    layers.Dense(64, activation='relu'),
+    layers.Dropout(0.3),
+    layers.Dense(1)  # Output layer for regression
+])
+
+# Compile the CNN model
+model_cnn.compile(optimizer='adam', loss='mean_squared_error')
+
+# Train the CNN model
+callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+model_cnn.fit(X_train_cnn, y_train, validation_data=(X_test_cnn, y_test),
+              epochs=100, batch_size=32, callbacks=[callback], verbose=0)
+
+# Predict and evaluate CNN
+y_pred_cnn = model_cnn.predict(X_test_cnn).flatten()
+results.append(evaluate_model(y_test, y_pred_cnn, "CNN"))
+
+# --------------------------------------
+# 🌟 3. WORD2VEC + LINEAR REGRESSION
+# --------------------------------------
+sentences = [str(text).split() for text in df[text_field]]
+w2v_model = Word2Vec(sentences, vector_size=100, window=5, min_count=1, sg=0)
+def vectorize(text):
+    tokens = text.split()
+    vectors = [w2v_model.wv[word] for word in tokens if word in w2v_model.wv]
+    return np.mean(vectors, axis=0) if vectors else np.zeros(100)
+
+X_w2v = np.vstack(df[text_field].apply(vectorize))
+X_train_w2v, X_test_w2v, y_train_w2v, y_test_w2v = train_test_split(X_w2v, y, test_size=0.2, random_state=42)
+
+lr = LinearRegression()
+lr.fit(X_train_w2v, y_train_w2v)
+y_pred_w2v = lr.predict(X_test_w2v)
+results.append(evaluate_model(y_test_w2v, y_pred_w2v, "Word2Vec + Linear Regression"))
+
+# --------------------------------------
+# 🌟 4. SVM REGRESSOR
+# --------------------------------------
+svm = SVR(kernel='rbf')
+svm.fit(X_scaled[:len(y_train)], y_train)
+y_pred_svm = svm.predict(X_scaled[len(y_train):])
+results.append(evaluate_model(y_test, y_pred_svm, "SVM"))
+
+# --------------------------------------
+# 🌟 5. BERT REGRESSOR
+# --------------------------------------
 tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-encoded_data = tokenizer(X.astype(str).tolist(), padding=True, truncation=True, max_length=128, return_tensors='pt')
+encoded = tokenizer(df[text_field].astype(str).tolist(), padding=True, truncation=True, max_length=128, return_tensors='pt')
+input_ids, attention_masks = encoded['input_ids'], encoded['attention_mask']
+y_tensor = torch.tensor(y.values, dtype=torch.float32)
 
-input_ids = encoded_data['input_ids']
-attention_masks = encoded_data['attention_mask']
-y = torch.tensor(y.values, dtype=torch.float32)
+train_size = int(0.8 * len(y))
+train_dataset = TensorDataset(input_ids[:train_size], attention_masks[:train_size], y_tensor[:train_size])
+test_dataset = TensorDataset(input_ids[train_size:], attention_masks[train_size:], y_tensor[train_size:])
 
-# Split the data into training and testing sets
-train_size = int(0.8 * len(X))
-test_size = len(X) - train_size
-
-# Create TensorDatasets for training and testing data
-train_dataset = TensorDataset(input_ids[:train_size], attention_masks[:train_size], y[:train_size])
-test_dataset = TensorDataset(input_ids[train_size:], attention_masks[train_size:], y[train_size:])
-
-# Load pre-trained BERT model for sequence regression
-model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=1)
-
-# Set requires_grad to True for BERT model's parameters
-for param in model.bert.parameters():
-    param.requires_grad = True
-
-# Define optimizer and learning rate scheduler
-optimizer = AdamW(model.parameters(), lr=1e-5)
+model_bert = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=1, problem_type="regression")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model_bert.to(device)
+optimizer = AdamW(model_bert.parameters(), lr=1e-5)
 scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=len(train_dataset))
-
-# Define loss function for regression
 loss_fn = nn.MSELoss()
 
-# Fine-tune the BERT model
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(device)
-
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-
-model.train()
-for epoch in range(5):  # You can adjust the number of epochs
+train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+model_bert.train()
+for epoch in range(3):  # Fewer epochs for demo; increase for better results
     for batch in train_loader:
         optimizer.zero_grad()
-        batch_input_ids, batch_attention_masks, batch_labels = batch
-        batch_input_ids, batch_attention_masks, batch_labels = batch_input_ids.to(device), batch_attention_masks.to(device), batch_labels.to(device)
-        outputs = model(input_ids=batch_input_ids, attention_mask=batch_attention_masks)
-        logits = outputs.logits.squeeze() # Remove any extra dimensions from logits
-        loss = loss_fn(logits, batch_labels)
+        ids, masks, labels = [b.to(device) for b in batch]
+        outputs = model_bert(input_ids=ids, attention_mask=masks)
+        logits = outputs.logits.view(-1)
+        loss = loss_fn(logits, labels.to(device))
         loss.backward()
         optimizer.step()
         scheduler.step()
 
-# Evaluate the model
-test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
-
-model.eval()
-predictions = []
-true_labels = []
-
+# Evaluate BERT
+model_bert.eval()
+test_loader = DataLoader(test_dataset, batch_size=16)
+y_preds_bert, y_true_bert = [], []
 with torch.no_grad():
     for batch in test_loader:
-        batch_input_ids, batch_attention_masks, batch_labels = batch
-        batch_input_ids, batch_attention_masks, batch_labels = batch_input_ids.to(device), batch_attention_masks.to(device), batch_labels.to(device)
-        outputs = model(input_ids=batch_input_ids, attention_mask=batch_attention_masks)
-        predictions.extend(outputs.logits.view(-1).cpu().numpy())
-        true_labels.extend(batch_labels.cpu().numpy())
+        ids, masks, labels = [b.to(device) for b in batch]
+        outputs = model_bert(input_ids=ids, attention_mask=masks)
+        y_preds_bert.extend(outputs.logits.view(-1).cpu().numpy())
+        y_true_bert.extend(labels.cpu().numpy())
+results.append(evaluate_model(y_true_bert, y_preds_bert, "BERT"))
 
-mse = mean_squared_error(true_labels, predictions)
-print(f"Mean Squared Error: {mse/leveler+raiser}")import pandas as pd
-import torch
-from torch.utils.data import DataLoader, TensorDataset
-from sklearn.model_selection import train_test_split
-from transformers import BertTokenizer, BertForSequenceClassification, get_linear_schedule_with_warmup
-from transformers.optimization import AdamW
-from sklearn.metrics import mean_squared_error
-import torch.nn as nn
-
-
-
-####RANDOM FOREST
-
-# Import necessary libraries
-import pandas as pd
-import numpy as np
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, r2_score
-from google.colab import drive
-
-# Mount your Google Drive to access the dataset
-drive.mount('/content/drive')
-
-# Load the dataset from Google Drive
-dataset_path = '/content/drive/My Drive/info_acc.csv'  # Update with the correct path
-df = pd.read_csv(dataset_path)
-
-# Select relevant features (exclude 'Product Name')
-X = df[['Price', 'DescriptionLength', 'InStock', 'ProductRating']]
-y = df['Accuracy']
-
-# Split the data into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-# Create and train the Random Forest model
-random_forest = RandomForestRegressor(n_estimators=100, random_state=42)
-random_forest.fit(X_train, y_train)
-
-# Make predictions
-y_pred = random_forest.predict(X_test)
-
-# Calculate mean squared error and R-squared as performance metrics
-mse = mean_squared_error(y_test, y_pred)
-r2 = r2_score(y_test, y_pred)
-
-print(f"Mean Squared Error: {mse*10}")
-#print(f"R-squared (R2): {r2}")
-
-
-####CNN
-
-import torch
-import pandas as pd
-import numpy as np
-import random
-import os
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
-from google.colab import drive
-
-# Set the device to GPU if available
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# Mount your Google Drive to access the dataset
-drive.mount('/content/drive')
-
-# Load the dataset from Google Drive
-dataset_path = '/content/drive/My Drive/info_acc.csv'  # Update with the correct path
-df = pd.read_csv(dataset_path)
-df.head()
-
-# Import necessary libraries
-import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
-
-# Load the dataset from Google Drive
-dataset_path = '/content/drive/My Drive/info_acc.csv'  # Update with the correct path
-df = pd.read_csv(dataset_path)
-
-# Drop non-numeric columns (in this case, 'ProductID' and 'DescriptionLength')
-# You can modify this list to exclude other non-numeric columns if needed
-non_numeric_columns = ['ProductName', 'InStock']
-df = df.drop(non_numeric_columns, axis=1)
-
-# Define features (X) and target variable (y)
-X = df.drop("Accuracy", axis=1)  # Features
-y = df["Accuracy"]  # Target variable
-
-# Split the data into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-# Create a simple feedforward neural network model
-model = keras.Sequential([
-    layers.Input(shape=(X_train.shape[1],)),  # Adjust the input shape to match the number of features
-    layers.Dense(64, activation='relu'),
-    layers.Dense(32, activation='relu'),
-    layers.Dense(1)
-])
-
-# Compile the model
-model.compile(optimizer='adam', loss='mean_squared_error')
-
-# Train the model
-model.fit(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_test, y_test))
-
-# Evaluate the model
-mse = model.evaluate(X_test, y_test)
-print(f"Mean Squared Error: {mse}")
-
-# Optionally, you can use this model to predict 'Accuracy' for new data.
-# For example, if you have a new set of input features in a DataFrame 'new_data':
-# new_accuracy = model.predict(new_data)
-
-
-#### WORD2VEC
-
-import pandas as pd
-import os
-import gensim
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error
-from gensim.models import Word2Vec
-from gensim.models import KeyedVectors
-
-# Mount your Google Drive to access the dataset
-drive.mount('/content/drive')
-
-# Load the dataset from Google Drive
-dataset_path = '/content/drive/My Drive/info_acc.csv'  # Update with the correct path
-df = pd.read_csv(dataset_path)
-df.head()
-
-# Preprocess the data, including text data
-# For simplicity, we'll work with 'ProductName' as the text feature
-sentences = [str(text).split() for text in df['ProductName']]
-# 'ProductName' is assumed to be a space-separated text field, modify accordingly
-
-# Train a Word2Vec model
-model = Word2Vec(sentences, vector_size=100, window=5, min_count=1, sg=0) # Adjust the parameters
-
-# Prepare the Word2Vec vectors for 'ProductName'
-df['ProductNameVector'] = df['ProductName'].apply(lambda x: model.wv[x.split()].mean(axis=0))
-
-# Define features (X) and target variable (y)
-X = df['ProductNameVector'].apply(pd.Series)
-y = df['Accuracy']
-
-# Split the data into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-# Create a simple regression model (you can replace this with your own model)
-from sklearn.linear_model import LinearRegression
-model = LinearRegression()
-
-# Train the model
-model.fit(X_train, y_train)
-
-# Predict 'Accuracy' on the test data
-y_pred = model.predict(X_test)
-
-# Evaluate the model
-mse = mean_squared_error(y_test, y_pred)
-print(f"Mean Squared Error: {mse*10}")
-
-# Optionally, you can use this model to predict 'Accuracy' for new data.
-# For example, if you have a new 'ProductName' text, you can convert it to a vector using the trained Word2Vec model and then use the regression model to predict 'Accuracy'.
-
-
-#### SVM
-
-import pandas as pd
-import os
-from sklearn.model_selection import train_test_split
-from sklearn.svm import SVR
-from sklearn.metrics import mean_squared_error
-
-# Mount Google Drive to access the dataset
-from google.colab import drive
-drive.mount('/content/drive')
-
-# Load your dataset from Google Drive (replace 'your_dataset.csv' with the correct path)
-dataset_path = '/content/drive/My Drive/info_acc.csv'
-df = pd.read_csv(dataset_path)
-
-# Define features (X) and target variable (y)
-X = df[['Price', 'DescriptionLength', 'InStock', 'ProductRating']]
-y = df['Accuracy']
-
-# Split the data into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-# Create and train the SVM regressor
-svm_regressor = SVR(kernel='linear')
-svm_regressor.fit(X_train, y_train)
-
-# Make predictions on the test data
-y_pred = svm_regressor.predict(X_test)
-
-# Calculate the Mean Squared Error (MSE) to evaluate the model
-mse = mean_squared_error(y_test, y_pred)
-print(f"Mean Squared Error: {mse}")
+# --------------------------------------
+# 📋 Summary Table
+# --------------------------------------
+results_df = pd.DataFrame(results)
+print("\n🔽 Model Comparison:")
+print(results_df.sort_values(by="RMSE"))
